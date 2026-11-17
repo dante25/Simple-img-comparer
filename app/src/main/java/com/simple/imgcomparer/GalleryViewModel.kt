@@ -69,6 +69,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Redoslijed u klasičnom pregledu: slika, pa odmah njene varijante realizma. */
+    val viewerList: List<Media> get() {
+        val groups = pairGroups
+        return visible.flatMap { m -> listOf(m) + (if (Namer.ANIME.matches(m.name)) groups[groupKey(m)]?.reals.orEmpty() else emptyList()) }
+    }
+    fun groupFor(m: Media): PairGroup? = groupKey(m)?.let { pairGroups[it] }?.takeIf { it.reals.isNotEmpty() }
+    fun openMedia(m: Media) { open(viewerList.indexOfFirst { it.id == m.id }.coerceAtLeast(0)) }
+
     fun openGroup(g: PairGroup) {
         selected.clear(); selected.add(g.anime); selected.addAll(g.reals)
         compareMode = false

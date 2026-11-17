@@ -31,8 +31,14 @@ private fun Item.media() = Media(-1, Uri.fromFile(File(path)), name, "", path)
 internal fun PairsScreen(vm: GalleryViewModel) {
     var pick by remember { mutableStateOf(false) }
     val res = vm.pairing
-    val confident = res?.groups?.filter { it.confidence != Confidence.REVIEW }.orEmpty()
+    val plan = remember(res, vm.pairsFolder) {
+        res?.let { r -> Namer.plan(r.groups, vm.pairsFolder?.let { File(it).listFiles()?.toList() }.orEmpty()) }.orEmpty()
+    }
+    val pendingPaths = remember(plan) { plan.map { it.from.path }.toSet() }
+    fun Group.pending() = members.any { it.path in pendingPaths }
+    val confident = res?.groups?.filter { it.confidence != Confidence.REVIEW && it.pending() }.orEmpty()
     val review = res?.groups?.filter { it.confidence == Confidence.REVIEW }.orEmpty()
+    val done = res?.groups?.count { !it.pending() } ?: 0
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -63,18 +69,15 @@ internal fun PairsScreen(vm: GalleryViewModel) {
             Text("Skeniram $d / $t", Modifier.padding(12.dp), fontSize = 13.sp, color = Color.Gray)
         } else if (res != null) {
             Text(
-                "${res.groups.size} grupa • ${review.size} za provjeru • ${res.orphans.sumOf { it.size }} rezultata bez izvora • ${res.ungrouped.size} samostalnih",
+                "${res.groups.size} grupa • $done već imenovano • ${review.size} za provjeru • ${res.orphans.sumOf { it.size }} rezultata bez izvora • ${res.ungrouped.size} samostalnih",
                 Modifier.padding(horizontal = 14.dp, vertical = 4.dp).testTag("summary"), fontSize = 13.sp, color = Color.Gray,
             )
         }
         vm.pairsMessage?.let { Text(it, Modifier.padding(horizontal = 14.dp).testTag("message"), color = Accent, fontSize = 13.sp) }
 
-        val plan = remember(res, vm.pairsFolder) {
-            res?.let { r -> Namer.plan(r.groups, vm.pairsFolder?.let { File(it).listFiles()?.toList() }.orEmpty()) }.orEmpty()
-        }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (res != null) {
-                items(res.groups, key = { it.source.path }) { g -> GroupCard(vm, g, plan) }
+                items(res.groups.sortedByDescending { it.pending() }, key = { it.source.path }) { g -> GroupCard(vm, g, plan) }
                 if (res.orphans.isNotEmpty()) item {
                     Text("Rezultati bez izvora u folderu", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                     res.orphans.forEach { o ->
@@ -124,6 +127,7 @@ private fun GroupCard(vm: GalleryViewModel, g: Group, plan: List<RenameOp>) {
                     }
                 }
             }
+            if (names.isEmpty()) Text("✓ već imenovano", fontSize = 12.sp, color = Color(0xFF7FD99A), modifier = Modifier.testTag("done"))
             val tag = when (g.confidence) {
                 Confidence.EXACT -> "Tačno (metadata)"; Confidence.VISUAL -> "Vizuelno"; Confidence.REVIEW -> "Provjeri"
             }

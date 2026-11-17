@@ -58,25 +58,69 @@ class PairsUiTest {
     }
 
     // ───── galerija: grupe ─────
-    private fun setMedia(dir: File, names: List<String>) {
+    private fun installMediaProvider(): MutableList<Uri> {
+        val deleted = mutableListOf<Uri>()
+        val provider = object : android.content.ContentProvider() {
+            override fun onCreate() = true
+            override fun query(u: Uri, p: Array<String>?, s: String?, a: Array<String>?, o: String?): android.database.Cursor? = null
+            override fun getType(u: Uri) = null
+            override fun insert(u: Uri, v: android.content.ContentValues?) = null
+            override fun delete(u: Uri, s: String?, a: Array<String>?): Int { deleted += u; return 1 }
+            override fun update(u: Uri, v: android.content.ContentValues?, s: String?, a: Array<String>?) = 0
+        }
+        provider.attachInfo(app, android.content.pm.ProviderInfo().apply { authority = "media"; exported = true })
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal("media", provider)
+        return deleted
+    }
+
+    private fun setMedia(dir: File, names: List<String>, contentUris: Boolean = false) {
         val list = names.mapIndexed { i, n ->
             val f = File(dir, n).also { png(it, AColor.rgb(40 * i % 255, 90, 160)) }
-            Media(i.toLong(), Uri.fromFile(f), n, dir.name, f.path)
+            Media(i.toLong(), if (contentUris) Uri.parse("content://media/external/images/media/$i") else Uri.fromFile(f), n, dir.name, f.path)
         }
         vm.repo = object : MediaRepository(app.contentResolver) { override suspend fun loadImages() = list }
         vm.refresh(); rule.waitForIdle()
     }
 
-    @Test fun gallery_collapses_group_shows_badge_and_opens_compare() {
+    @Test fun gallery_collapses_group_tap_opens_viewer_badge_opens_compare() {
         setMedia(tmp.newFolder("a"), listOf("0001_anime.png", "0001_real_1.png", "0001_real_2.png", "other.png"))
         rule.setContent { AppTheme { GalleryScreen(vm) } }
         rule.waitForIdle()
-        assertEquals(listOf("0001_anime.png", "other.png"), vm.visible.map { it.name })   // varijante skrivene
+        assertEquals(listOf("0001_anime.png", "other.png"), vm.visible.map { it.name })   // varijante skrivene u mreži
         rule.onNodeWithText("+2").assertIsDisplayed(); shot("10_gallery_group")
+        // dodir na sliku = klasični pregled (anime se može otvoriti, pa i obrisati)
         rule.onNodeWithContentDescription("0001_anime.png").performClick()
+        assertTrue(vm.screen is Screen.Viewer)
+        // u pregledu se prelistavaju anime + varijante
+        assertEquals(listOf("0001_anime.png", "0001_real_1.png", "0001_real_2.png", "other.png"), vm.viewerList.map { it.name })
+        assertEquals(0, (vm.screen as Screen.Viewer).index)
+        assertTrue(vm.back()); assertTrue(vm.screen is Screen.Gallery)
+        // oznaka +N = compare cijele grupe
+        rule.onNodeWithText("+2").performClick()
         assertTrue(vm.screen is Screen.Compare)
         assertEquals(listOf("0001_anime.png", "0001_real_1.png", "0001_real_2.png"), vm.selected.map { it.name })
         assertTrue(vm.back()); assertTrue(vm.screen is Screen.Gallery); assertTrue(vm.selected.isEmpty())
+    }
+
+    @Test fun viewer_shows_compare_for_grouped_images_and_A_can_be_deleted_there() {
+        val dir = tmp.newFolder("v")
+        val deleted = installMediaProvider()
+        setMedia(dir, listOf("0001_anime.png", "0001_real_1.png", "other.png"), contentUris = true)
+        vm.silentDelete = { true }
+        // otvori varijantu (real) pojedinačno
+        vm.openMedia(vm.viewerList[1])
+        rule.setContent { AppTheme { ViewerScreen(vm, (vm.screen as Screen.Viewer).index) } }
+        rule.waitForIdle()
+        rule.onNodeWithTag("viewerCompare").assertIsDisplayed().performClick()
+        assertTrue(vm.screen is Screen.Compare)
+        assertEquals(listOf("0001_anime.png", "0001_real_1.png"), vm.selected.map { it.name })
+        // klasični pregled anime slike: brisanje A je moguće samo ovdje
+        vm.back()
+        vm.openMedia(vm.viewerList[0])
+        vm.delete(listOf(vm.viewerList[0]))
+        until { deleted.isNotEmpty() }
+        assertEquals(listOf(0L), deleted.map { it.lastPathSegment!!.toLong() })   // obrisana je anime (A), ništa drugo
+        assertNull(vm.pendingDelete)
     }
 
     @Test fun real_without_anime_sibling_stays_visible_and_groups_do_not_mix_across_folders() {
@@ -160,8 +204,10 @@ class PairsUiTest {
         assertEquals(14, names.count { Namer.REAL.matches(it) })
         // ne-parovi su ostali netaknuti
         for (n in listOf("189325.png", "189320.png", "190440.png", "190365.png", "190344.png", "190347.jpg")) assertTrue("$n", n in names)
+        until { !vm.scanning && vm.pairing != null }
         rule.waitForIdle()
         rule.onNodeWithTag("summary").assertIsDisplayed()
+        rule.onNodeWithTag("applyAll").assertIsNotEnabled()      // sve je već imenovano → nema šta primijeniti
         rule.onNodeWithTag("undo").assertIsEnabled().performClick()
         until { !vm.scanning && vm.pairsMessage?.startsWith("Vraćeno") == true }
         assertEquals(src.list()!!.toSet(), dir.list()!!.toSet())

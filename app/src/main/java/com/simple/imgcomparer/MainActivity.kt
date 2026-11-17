@@ -216,18 +216,14 @@ internal fun GalleryScreen(vm: GalleryViewModel) {
                     Box(
                         Modifier.aspectRatio(1f).background(Surface1)
                             .combinedClickable(
-                                onClick = {
-                                    val grp = vm.groupOfAnime(m)
-                                    if (vm.compareMode) vm.toggle(m)
-                                    else if (grp != null && grp.reals.isNotEmpty()) vm.openGroup(grp)
-                                    else vm.open(index)
-                                },
+                                onClick = { if (vm.compareMode) vm.toggle(m) else vm.openMedia(m) },
                                 onLongClick = { if (!vm.compareMode) { vm.enterCompareMode(); vm.toggle(m) } else vm.makeMain(m) },
                             )
                     ) {
                         Thumb(m, Modifier.fillMaxSize())
                         vm.groupOfAnime(m)?.takeIf { it.reals.isNotEmpty() }?.let { grp ->
-                            Badge("+${grp.reals.size}", Modifier.align(Alignment.BottomEnd).padding(6.dp).testTag("groupBadge"))
+                            Badge("+${grp.reals.size}", Modifier.align(Alignment.BottomEnd).padding(6.dp).testTag("groupBadge")
+                                .clickable { if (!vm.compareMode) vm.openGroup(grp) })
                         }
                         if (selIndex >= 0) {
                             Box(Modifier.fillMaxSize().background(Accent.copy(alpha = 0.25f))
@@ -307,14 +303,18 @@ internal fun SelectionBar(vm: GalleryViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ViewerScreen(vm: GalleryViewModel, start: Int) {
-    val items = vm.visible
+    val items = vm.viewerList
     if (items.isEmpty()) { vm.back(); return }
     val pager = rememberPagerState(initialPage = start.coerceIn(0, items.lastIndex)) { items.size }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text(items.getOrNull(pager.currentPage)?.name ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp) },
             navigationIcon = { IconButton({ vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) } },
-            actions = { IconButton({ items.getOrNull(pager.currentPage)?.let { vm.delete(listOf(it)) } }) { Icon(Icons.Default.Delete, "Obriši") } },
+            actions = {
+                val grp = items.getOrNull(pager.currentPage)?.let { vm.groupFor(it) }
+                if (grp != null) IconButton({ vm.openGroup(grp) }, Modifier.testTag("viewerCompare")) { Icon(Icons.Default.Compare, "Compare") }
+                IconButton({ items.getOrNull(pager.currentPage)?.let { vm.delete(listOf(it)) } }) { Icon(Icons.Default.Delete, "Obriši") }
+            },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg, titleContentColor = Color.White,
                 actionIconContentColor = Color.White, navigationIconContentColor = Color.White),
         )
