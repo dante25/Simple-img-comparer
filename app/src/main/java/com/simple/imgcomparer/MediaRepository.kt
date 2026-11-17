@@ -15,9 +15,9 @@ data class Media(
 )
 
 /** Skenira slike jednim MediaStore upitom (bez hodanja po fajl-sistemu) – zato je brzo. */
-class MediaRepository(private val resolver: ContentResolver) {
+open class MediaRepository(private val resolver: ContentResolver) {
 
-    suspend fun loadImages(): List<Media> = withContext(Dispatchers.IO) {
+    open suspend fun loadImages(): List<Media> = withContext(Dispatchers.IO) {
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
             MediaStore.Images.Media._ID,

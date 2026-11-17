@@ -26,6 +26,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            System.getenv("ROBOLECTRIC_DEPS")?.let { dir ->
+                it.systemProperty("robolectric.dependency.dir", dir)
+                it.systemProperty("robolectric.offline", "true")
+            }
+        }
+    }
 }
 
 dependencies {
@@ -39,4 +48,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation(bom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

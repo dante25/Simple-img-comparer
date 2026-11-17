@@ -53,6 +53,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -80,7 +81,7 @@ private val Surface1 = Color(0xFF1A1A20)
 private val Accent = Color(0xFF7C9CFF)
 
 @Composable
-private fun AppTheme(content: @Composable () -> Unit) = MaterialTheme(
+internal fun AppTheme(content: @Composable () -> Unit) = MaterialTheme(
     colorScheme = darkColorScheme(
         primary = Accent, background = Bg, surface = Surface1, onSurface = Color.White,
     ),
@@ -132,7 +133,7 @@ private fun Root(vm: GalleryViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun GalleryScreen(vm: GalleryViewModel) {
+internal fun GalleryScreen(vm: GalleryViewModel) {
     val items = vm.visible
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -217,7 +218,7 @@ private fun Thumb(m: Media, modifier: Modifier = Modifier, px: Int = 256) {
 
 /** Donja traka iznad navigation bara: sličice slijeva → desno, kanta skroz desno. */
 @Composable
-private fun SelectionBar(vm: GalleryViewModel) {
+internal fun SelectionBar(vm: GalleryViewModel) {
     Surface(color = Surface1, tonalElevation = 6.dp, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
         Row(
             Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp).height(56.dp),
@@ -240,7 +241,7 @@ private fun SelectionBar(vm: GalleryViewModel) {
                 }
                 Spacer(Modifier.width(4.dp))
             }
-            IconButton(onClick = { vm.deleteSelected() }, enabled = vm.selected.isNotEmpty()) {
+            IconButton(onClick = { vm.deleteSelected() }, enabled = vm.selected.isNotEmpty(), modifier = Modifier.testTag("delete")) {
                 Icon(Icons.Default.Delete, "Obriši", tint = if (vm.selected.isNotEmpty()) Color(0xFFFF6B6B) else Color.Gray)
             }
         }
@@ -251,7 +252,7 @@ private fun SelectionBar(vm: GalleryViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ViewerScreen(vm: GalleryViewModel, start: Int) {
+internal fun ViewerScreen(vm: GalleryViewModel, start: Int) {
     val items = vm.visible
     if (items.isEmpty()) { vm.back(); return }
     val pager = rememberPagerState(initialPage = start.coerceIn(0, items.lastIndex)) { items.size }
@@ -274,7 +275,7 @@ private fun ViewerScreen(vm: GalleryViewModel, start: Int) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CompareScreen(vm: GalleryViewModel) {
+internal fun CompareScreen(vm: GalleryViewModel) {
     val main = vm.selected.firstOrNull()
     val others = vm.selected.drop(1)
     if (main == null || others.isEmpty()) { vm.back(); return }
@@ -312,7 +313,7 @@ private fun CompareScreen(vm: GalleryViewModel) {
                         }
                     }
                 }
-                IconButton({ vm.deleteSelected() }) { Icon(Icons.Default.Delete, "Obriši", tint = Color(0xFFFF6B6B)) }
+                IconButton({ vm.deleteSelected() }, Modifier.testTag("delete")) { Icon(Icons.Default.Delete, "Obriši", tint = Color(0xFFFF6B6B)) }
             }
         }
     }
@@ -320,7 +321,7 @@ private fun CompareScreen(vm: GalleryViewModel) {
 
 /** A (before) je lijevo od klizača, B (after) desno. Povuci lijevo/desno. */
 @Composable
-private fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modifier) {
+internal fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modifier) {
     var frac by remember { mutableFloatStateOf(0.5f) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     val ctx = LocalContext.current
@@ -351,7 +352,7 @@ private fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modifi
         )
         // linija + ručka
         val xDp = with(LocalDensity.current) { (boxSize.width * frac).toDp() }
-        Box(Modifier.offset(x = xDp - 1.dp).width(2.dp).fillMaxHeight().background(Color.White))
+        Box(Modifier.testTag("slider").offset(x = xDp - 1.dp).width(2.dp).fillMaxHeight().background(Color.White))
         Box(
             Modifier.offset(x = xDp - 22.dp).align(Alignment.CenterStart).size(44.dp)
                 .clip(CircleShape).background(Color.White),

@@ -24,7 +24,7 @@ sealed interface Screen {
 
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val resolver = app.contentResolver
-    private val repo = MediaRepository(resolver)
+    internal var repo: MediaRepository = MediaRepository(resolver)
 
     var all by mutableStateOf<List<Media>>(emptyList()); private set
     var loading by mutableStateOf(false); private set
@@ -80,7 +80,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                pendingDelete = MediaStore.createDeleteRequest(resolver, uris).intentSender
+                pendingDelete = try {
+                    MediaStore.createDeleteRequest(resolver, uris).intentSender
+                } catch (e: Exception) { null }
             } else {
                 try {
                     withContext(Dispatchers.IO) { uris.forEach { resolver.delete(it, null, null) } }
