@@ -28,6 +28,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.geometry.Offset
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -101,7 +102,7 @@ class AppTest {
         rule.onNodeWithContentDescription("Compare").performClick()
         val items = vm.visible
         rule.onNodeWithContentDescription("IMG_0.jpg").performClick()
-        rule.onNodeWithTag("delete").assertIsEnabled()
+        rule.onNodeWithTag("delete").assertIsNotEnabled()    // samo A -> nema šta brisati
         rule.onNodeWithText("Uporedi").assertDoesNotExist()  // treba bar 2 slike
         rule.onNodeWithContentDescription("IMG_1.jpg").performClick()
         rule.onNodeWithContentDescription("IMG_2.jpg").performClick()
@@ -189,8 +190,8 @@ class AppTest {
         }
         provider.attachInfo(app, android.content.pm.ProviderInfo().apply { authority = "media"; exported = true })
         org.robolectric.shadows.ShadowContentResolver.registerProviderInternal("media", provider)
-        vm.toggle(vm.visible[0])
-        vm.deleteSelected()
+        vm.silentDelete = { false }
+        vm.delete(listOf(vm.visible[0]))
         rule.waitUntil(5_000) { calledMethod != null }
         assertEquals("create_delete_request", calledMethod)
         assertEquals(listOf(vm.visible[0].uri), calledUris)
@@ -220,5 +221,109 @@ class AppTest {
         assertEquals(2, list.size)
         assertEquals("Camera", list[0].folder); assertEquals("Ostalo", list[1].folder)
         assertTrue(list[0].uri.toString().endsWith("/5"))
+    }
+
+    private fun until(cond: () -> Boolean) = rule.waitUntil(5_000) {
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        cond()
+    }
+
+    // ───── brisanje bez potvrde ─────
+    private fun installMediaProvider(): MutableList<Uri> {
+        val deleted = mutableListOf<Uri>()
+        val provider = object : ContentProvider() {
+            override fun onCreate() = true
+            override fun query(u: Uri, p: Array<String>?, s: String?, a: Array<String>?, o: String?): Cursor? = null
+            override fun getType(u: Uri) = null
+            override fun insert(u: Uri, v: ContentValues?) = null
+            override fun delete(u: Uri, s: String?, a: Array<String>?): Int { deleted += u; return 1 }
+            override fun update(u: Uri, v: ContentValues?, s: String?, a: Array<String>?) = 0
+        }
+        provider.attachInfo(app, android.content.pm.ProviderInfo().apply { authority = "media"; exported = true })
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal("media", provider)
+        return deleted
+    }
+
+    private fun contentMedia() = (0 until 4).map {
+        Media(it.toLong(), Uri.parse("content://media/external/images/media/$it"), "IMG_$it.jpg", "Camera")
+    }
+
+    private fun useContentMedia() {
+        val list = contentMedia()
+        vm.repo = object : MediaRepository(app.contentResolver) { override suspend fun loadImages() = list }
+        vm.refresh(); rule.waitForIdle()
+        vm.silentDelete = { true }
+    }
+
+    @Test fun compare_screen_delete_removes_only_shown_B_without_dialog_and_never_A() {
+        val deleted = installMediaProvider(); useContentMedia()
+        listOf(0, 1, 2).forEach { vm.toggle(vm.visible[it]) }       // A=0, B1=1, B2=2
+        rule.setContent { AppTheme { CompareScreen(vm) } }
+        rule.waitForIdle()
+        rule.onNodeWithTag("delete").performClick()                  // prikazan je B1
+        until { deleted.isNotEmpty() && vm.selected.size == 2 }
+        assertEquals(listOf(1L), deleted.map { it.lastPathSegment!!.toLong() })
+        assertNull("nema sistemskog dijaloga", vm.pendingDelete)
+        assertEquals(listOf(0L, 2L), vm.selected.map { it.id })      // A ostaje, B2 ostaje
+        rule.waitForIdle()
+        rule.onNodeWithTag("delete").performClick()                  // sad B2
+        until { deleted.size == 2 && vm.selected.size == 1 }
+        assertEquals(listOf(1L, 2L), deleted.map { it.lastPathSegment!!.toLong() })
+        assertEquals(listOf(0L), vm.selected.map { it.id })          // A nikad obrisan
+        assertTrue(vm.screen is Screen.Gallery)                      // nema više B -> nazad u galeriju
+        assertFalse(deleted.any { it.lastPathSegment == "0" })
+    }
+
+    @Test fun gallery_bar_delete_removes_only_Bs() {
+        val deleted = installMediaProvider(); useContentMedia()
+        rule.setContent { AppTheme { GalleryScreen(vm) } }
+        rule.onNodeWithContentDescription("Compare").performClick()
+        listOf(3, 1, 2).forEach { vm.toggle(vm.visible[it]) }        // A=3
+        rule.waitForIdle()
+        rule.onNodeWithTag("delete").performClick()
+        until { deleted.size == 2 && vm.selected.size == 1 }
+        assertEquals(setOf(1L, 2L), deleted.map { it.lastPathSegment!!.toLong() }.toSet())
+        assertEquals(listOf(3L), vm.selected.map { it.id })
+    }
+
+    @Test fun viewer_delete_removes_current_image_without_dialog() {
+        val deleted = installMediaProvider(); useContentMedia()
+        rule.setContent { AppTheme { ViewerScreen(vm, 2) } }
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription("Obriši").performClick()
+        until { deleted.isNotEmpty() }
+        assertEquals(listOf(2L), deleted.map { it.lastPathSegment!!.toLong() })
+        assertNull(vm.pendingDelete)
+    }
+
+    // ───── pinch zoom ─────
+    private fun redRows(): Int {
+        val b = px(); val x = (b.width * 0.1f).toInt()
+        return (0 until b.height).count { y -> val c = b.getPixel(x, y); AColor.red(c) > 200 && AColor.green(c) < 60 && AColor.blue(c) < 60 }
+    }
+
+    @Test fun pinch_zoom_zooms_both_images_two_fingers_do_not_move_slider_and_reset_works() {
+        vm.toggle(vm.visible[0]); vm.toggle(vm.visible[1])
+        rule.setContent { AppTheme { CompareScreen(vm) } }
+        rule.waitUntil(15_000) { AColor.red(px().getPixel(px().width / 10, px().height / 2)) > 200 }
+        val h0 = redRows()
+        rule.onNodeWithTag("zoom").assertDoesNotExist()
+        rule.onRoot().performTouchInput {
+            val c = center
+            pinch(Offset(c.x - 60, c.y), Offset(c.x + 60, c.y), Offset(c.x - 160, c.y), Offset(c.x + 160, c.y))
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag("zoom").assertIsDisplayed()
+        val h1 = redRows()
+        assertTrue("A treba biti uvećana ($h0 -> $h1)", h1 > h0 * 1.5)
+        // slider se nije pomjerio pinch-om: lijevo crveno, desno plavo oko sredine
+        val b = px()
+        assertTrue(AColor.red(b.getPixel((b.width * 0.35f).toInt(), b.height / 2)) > 200)
+        assertTrue(AColor.blue(b.getPixel((b.width * 0.65f).toInt(), b.height / 2)) > 200)
+        shot("8_zoomed")
+        rule.onNodeWithTag("zoom").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("zoom").assertDoesNotExist()
+        assertEquals(h0.toDouble(), redRows().toDouble(), 4.0)
     }
 }

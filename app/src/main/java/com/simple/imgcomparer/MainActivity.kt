@@ -2,7 +2,11 @@ package com.simple.imgcomparer
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -18,8 +22,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -41,6 +51,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,22 +99,52 @@ internal fun AppTheme(content: @Composable () -> Unit) = MaterialTheme(
     content = content,
 )
 
-private fun storagePermission() =
-    if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES
-    else Manifest.permission.READ_EXTERNAL_STORAGE
+private fun storagePermissions(): Array<String> = when {
+    Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+    Build.VERSION.SDK_INT >= 29 -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+}
+
+private fun needsAllFilesAccess() =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()
 
 @Composable
 private fun Root(vm: GalleryViewModel) {
     val ctx = LocalContext.current
-    var granted by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(ctx, storagePermission()) == PackageManager.PERMISSION_GRANTED)
+    fun hasPerms() = storagePermissions().all {
+        ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED
     }
-    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    LaunchedEffect(Unit) { if (!granted) permLauncher.launch(storagePermission()) }
-    if (granted) LifecycleResumeEffect(Unit) { vm.refresh(); onPauseOrDispose { } }
+    var granted by remember { mutableStateOf(hasPerms()) }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        granted = it.values.all { ok -> ok }
+    }
+    LaunchedEffect(Unit) { if (!granted) permLauncher.launch(storagePermissions()) }
+
+    // Jednokratno: "Pristup svim fajlovima" → brisanje bez sistemske potvrde
+    var askAllFiles by remember { mutableStateOf(false) }
+    var askedAllFiles by rememberSaveable { mutableStateOf(false) }
+    if (granted) LifecycleResumeEffect(Unit) {
+        vm.refresh()
+        if (needsAllFilesAccess() && !askedAllFiles) askAllFiles = true
+        onPauseOrDispose { }
+    }
+    if (askAllFiles) AlertDialog(
+        onDismissRequest = { askAllFiles = false; askedAllFiles = true },
+        title = { Text("Brisanje bez potvrde") },
+        text = { Text("Da bi brisanje radilo odmah, bez Android dijaloga, dozvoli \"Pristup svim fajlovima\" za ovu aplikaciju.") },
+        confirmButton = {
+            TextButton(onClick = {
+                askAllFiles = false; askedAllFiles = true
+                ctx.startActivity(
+                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}"))
+                )
+            }) { Text("Dozvoli") }
+        },
+        dismissButton = { TextButton(onClick = { askAllFiles = false; askedAllFiles = true }) { Text("Kasnije") } },
+    )
 
     val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
-        if (it.resultCode == android.app.Activity.RESULT_OK) vm.onDeleted() else vm.pendingDelete = null
+        if (it.resultCode == android.app.Activity.RESULT_OK) vm.commitPendingDelete() else vm.pendingDelete = null
     }
     LaunchedEffect(vm.pendingDelete) {
         vm.pendingDelete?.let { deleteLauncher.launch(IntentSenderRequest.Builder(it).build()) }
@@ -119,7 +160,7 @@ private fun Root(vm: GalleryViewModel) {
             ) {
                 Text("Potrebna je dozvola za slike", fontSize = 18.sp)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = { permLauncher.launch(storagePermission()) }) { Text("Dozvoli") }
+                Button(onClick = { permLauncher.launch(storagePermissions()) }) { Text("Dozvoli") }
             }
         } else when (val s = vm.screen) {
             is Screen.Gallery -> GalleryScreen(vm)
@@ -241,8 +282,8 @@ internal fun SelectionBar(vm: GalleryViewModel) {
                 }
                 Spacer(Modifier.width(4.dp))
             }
-            IconButton(onClick = { vm.deleteSelected() }, enabled = vm.selected.isNotEmpty(), modifier = Modifier.testTag("delete")) {
-                Icon(Icons.Default.Delete, "Obriši", tint = if (vm.selected.isNotEmpty()) Color(0xFFFF6B6B) else Color.Gray)
+            IconButton(onClick = { vm.deleteBs() }, enabled = vm.selected.size >= 2, modifier = Modifier.testTag("delete")) {
+                Icon(Icons.Default.Delete, "Obriši B", tint = if (vm.selected.size >= 2) Color(0xFFFF6B6B) else Color.Gray)
             }
         }
     }
@@ -260,7 +301,7 @@ internal fun ViewerScreen(vm: GalleryViewModel, start: Int) {
         TopAppBar(
             title = { Text(items.getOrNull(pager.currentPage)?.name ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp) },
             navigationIcon = { IconButton({ vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) } },
-            actions = { IconButton({ items.getOrNull(pager.currentPage)?.let { vm.delete(listOf(it.uri)) } }) { Icon(Icons.Default.Delete, "Obriši") } },
+            actions = { IconButton({ items.getOrNull(pager.currentPage)?.let { vm.delete(listOf(it)) } }) { Icon(Icons.Default.Delete, "Obriši") } },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg, titleContentColor = Color.White,
                 actionIconContentColor = Color.White, navigationIconContentColor = Color.White),
         )
@@ -313,44 +354,80 @@ internal fun CompareScreen(vm: GalleryViewModel) {
                         }
                     }
                 }
-                IconButton({ vm.deleteSelected() }, Modifier.testTag("delete")) { Icon(Icons.Default.Delete, "Obriši", tint = Color(0xFFFF6B6B)) }
+                IconButton({ vm.delete(listOf(other)) }, Modifier.testTag("delete")) { Icon(Icons.Default.Delete, "Obriši", tint = Color(0xFFFF6B6B)) }
             }
         }
     }
 }
 
-/** A (before) je lijevo od klizača, B (after) desno. Povuci lijevo/desno. */
+/**
+ * A (before) lijevo od klizača, B (after) desno.
+ * 1 prst: povuci klizač lijevo/desno (ili dodir). 2 prsta: pinch-zoom + pan, isti za A i B.
+ */
 @Composable
 internal fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modifier) {
     var frac by remember { mutableFloatStateOf(0.5f) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    val slop = LocalViewConfiguration.current.touchSlop
     val ctx = LocalContext.current
-    fun req(m: Media) = ImageRequest.Builder(ctx).data(m.uri).size(Size(2048, 2048)).build()
+    fun req(m: Media) = ImageRequest.Builder(ctx).data(m.uri).size(Size(3072, 3072)).build()
 
     Box(
         modifier.clip(RoundedCornerShape(16.dp)).background(Color.Black)
             .onSizeChanged { boxSize = it }
             .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ ->
-                    change.consume()
-                    if (boxSize.width > 0) frac = (change.position.x / boxSize.width).coerceIn(0f, 1f)
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var multi = false
+                    var dragging = false
+                    do {
+                        val ev = awaitPointerEvent()
+                        val pressed = ev.changes.count { it.pressed }
+                        if (pressed >= 2) {
+                            multi = true
+                            val c = ev.calculateCentroid()
+                            val newScale = (scale * ev.calculateZoom()).coerceIn(1f, 8f)
+                            val z = newScale / scale
+                            val center = Offset(boxSize.width / 2f, boxSize.height / 2f)
+                            val t = (c - center) - (c - center - offset) * z + ev.calculatePan()
+                            val maxX = (newScale - 1f) * boxSize.width / 2f
+                            val maxY = (newScale - 1f) * boxSize.height / 2f
+                            scale = newScale
+                            offset = if (newScale <= 1f) Offset.Zero
+                            else Offset(t.x.coerceIn(-maxX, maxX), t.y.coerceIn(-maxY, maxY))
+                            ev.changes.forEach { it.consume() }
+                        } else if (!multi) {
+                            val ch = ev.changes.firstOrNull() ?: continue
+                            if (!dragging && (ch.position - down.position).getDistance() > slop) dragging = true
+                            if ((dragging || !ch.pressed) && boxSize.width > 0) {
+                                frac = (ch.position.x / boxSize.width).coerceIn(0f, 1f)
+                            }
+                            if (dragging) ch.consume()
+                        }
+                    } while (ev.changes.any { it.pressed })
                 }
             }
-            .pointerInput(Unit) {
-                detectTapGestures { if (boxSize.width > 0) frac = (it.x / boxSize.width).coerceIn(0f, 1f) }
-            }
     ) {
-        AsyncImage(req(after), after.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-        AsyncImage(
-            req(before), before.name,
+        val zoomLayer: androidx.compose.ui.graphics.GraphicsLayerScope.() -> Unit = {
+            scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y
+        }
+        Box(Modifier.fillMaxSize().graphicsLayer(block = zoomLayer)) {
+            AsyncImage(req(after), after.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        }
+        Box(
             Modifier.fillMaxSize().drawWithContent {
                 clipRect(left = 0f, top = 0f, right = size.width * frac, bottom = size.height) {
                     this@drawWithContent.drawContent()
                 }
-            },
-            contentScale = ContentScale.Fit,
-        )
-        // linija + ručka
+            }
+        ) {
+            Box(Modifier.fillMaxSize().graphicsLayer(block = zoomLayer)) {
+                AsyncImage(req(before), before.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            }
+        }
+        // linija + ručka (ostaju u ekranskim koordinatama, ne zumiraju se)
         val xDp = with(LocalDensity.current) { (boxSize.width * frac).toDp() }
         Box(Modifier.testTag("slider").offset(x = xDp - 1.dp).width(2.dp).fillMaxHeight().background(Color.White))
         Box(
@@ -361,5 +438,12 @@ internal fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modif
 
         Badge("A · PRIJE", Modifier.align(Alignment.TopStart).padding(12.dp))
         Badge("B · POSLIJE", Modifier.align(Alignment.TopEnd).padding(12.dp))
+        if (scale > 1.01f) {
+            Badge(
+                "%.1f× · reset".format(scale),
+                Modifier.align(Alignment.TopCenter).padding(12.dp).testTag("zoom")
+                    .clickable { scale = 1f; offset = Offset.Zero },
+            )
+        }
     }
 }

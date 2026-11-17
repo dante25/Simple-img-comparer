@@ -5,6 +5,7 @@ import android.app.RecoverableSecurityException
 import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -74,11 +75,30 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         if (i > 0) { selected.removeAt(i); selected.add(0, m) }
     }
 
-    fun deleteSelected() = delete(selected.map { it.uri })
+    /** Prave se samo B slike brišu iz compare moda; A (selected[0]) se nikad ne briše odavde. */
+    fun deleteBs() = delete(selected.drop(1))
 
-    fun delete(uris: List<Uri>) {
-        if (uris.isEmpty()) return
+    /** true = brisanje bez sistemskog dijaloga (dozvola "svi fajlovi" ili stari Android). */
+    internal var silentDelete: () -> Boolean = {
+        Build.VERSION.SDK_INT <= Build.VERSION_CODES.P ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager())
+    }
+
+    private var pendingIds: Set<Long> = emptySet()
+    fun commitPendingDelete() = onDeleted(pendingIds)
+
+    fun delete(items: List<Media>) {
+        if (items.isEmpty()) return
+        val uris = items.map { it.uri }
+        val ids = items.map { it.id }.toSet()
         viewModelScope.launch {
+            if (silentDelete()) {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching { uris.forEach { resolver.delete(it, null, null) } }.isSuccess
+                }
+                if (ok) { onDeleted(ids); return@launch }
+            }
+            pendingIds = ids
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 pendingDelete = try {
                     MediaStore.createDeleteRequest(resolver, uris).intentSender
@@ -86,7 +106,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 try {
                     withContext(Dispatchers.IO) { uris.forEach { resolver.delete(it, null, null) } }
-                    onDeleted()
+                    onDeleted(ids)
                 } catch (e: SecurityException) {
                     if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q && e is RecoverableSecurityException) {
                         pendingDelete = e.userAction.actionIntent.intentSender
@@ -96,10 +116,10 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun onDeleted() {
+    fun onDeleted(ids: Set<Long>) {
         pendingDelete = null
-        selected.clear()
-        if (screen is Screen.Compare) screen = Screen.Gallery
+        selected.removeAll { it.id in ids }
+        if (screen is Screen.Compare && selected.size < 2) screen = Screen.Gallery
         refresh()
     }
 }
