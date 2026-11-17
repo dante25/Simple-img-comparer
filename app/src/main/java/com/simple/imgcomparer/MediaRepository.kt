@@ -12,6 +12,7 @@ data class Media(
     val uri: Uri,
     val name: String,
     val folder: String,
+    val path: String? = null,
 )
 
 /** Skenira slike jednim MediaStore upitom (bez hodanja po fajl-sistemu) – zato je brzo. */
@@ -23,6 +24,7 @@ open class MediaRepository(private val resolver: ContentResolver) {
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.DISPLAY_NAME,
             MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Images.Media.DATA,
         )
         val sort = "${MediaStore.Images.Media.DATE_ADDED} DESC"
         val out = ArrayList<Media>()
@@ -30,6 +32,7 @@ open class MediaRepository(private val resolver: ContentResolver) {
             val idCol = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
             val folderCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+            val dataCol = c.getColumnIndex(MediaStore.Images.Media.DATA)
             out.ensureCapacity(c.count)
             while (c.moveToNext()) {
                 val id = c.getLong(idCol)
@@ -38,6 +41,7 @@ open class MediaRepository(private val resolver: ContentResolver) {
                     uri = ContentUris.withAppendedId(collection, id),
                     name = c.getString(nameCol) ?: "",
                     folder = c.getString(folderCol) ?: "Ostalo",
+                    path = if (dataCol >= 0) c.getString(dataCol) else null,
                 )
             }
         }

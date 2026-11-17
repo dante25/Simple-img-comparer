@@ -5,7 +5,10 @@ import android.app.RecoverableSecurityException
 import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
+import android.media.MediaScannerConnection
 import android.os.Environment
+import com.simple.imgcomparer.pairing.*
+import java.io.File
 import android.provider.MediaStore
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -21,6 +24,7 @@ sealed interface Screen {
     data object Gallery : Screen
     data class Viewer(val index: Int) : Screen
     data object Compare : Screen
+    data object Pairs : Screen
 }
 
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
@@ -40,7 +44,36 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     var pendingDelete by mutableStateOf<IntentSender?>(null)
 
     val folders: List<String> get() = all.map { it.folder }.distinct().sorted()
-    val visible: List<Media> get() = folder?.let { f -> all.filter { it.folder == f } } ?: all
+
+    /** NNNN_anime + NNNN_real_k u istom folderu = jedna grupa (anime + varijante realizma). */
+    class PairGroup(val anime: Media, val reals: List<Media>)
+    private fun dirOf(m: Media) = m.path?.substringBeforeLast('/') ?: m.folder
+    private fun groupKey(m: Media): String? {
+        val n = (Namer.ANIME.matchEntire(m.name) ?: Namer.REAL.matchEntire(m.name))?.groupValues?.get(1) ?: return null
+        return dirOf(m) + "#" + n
+    }
+    val pairGroups: Map<String, PairGroup> get() {
+        val animes = all.filter { Namer.ANIME.matches(it.name) }.associateBy { groupKey(it)!! }
+        return animes.mapValues { (k, a) ->
+            PairGroup(a, all.filter { Namer.REAL.matches(it.name) && groupKey(it) == k }
+                .sortedBy { Namer.REAL.matchEntire(it.name)!!.groupValues[2].toInt() })
+        }
+    }
+    fun groupOfAnime(m: Media): PairGroup? = if (Namer.ANIME.matches(m.name)) pairGroups[groupKey(m)] else null
+
+    /** Varijante realizma se u mreži skrivaju iza svoje anime slike. */
+    val visible: List<Media> get() {
+        val groups = pairGroups
+        return (folder?.let { f -> all.filter { it.folder == f } } ?: all).filterNot {
+            Namer.REAL.matches(it.name) && groups.containsKey(groupKey(it))
+        }
+    }
+
+    fun openGroup(g: PairGroup) {
+        selected.clear(); selected.add(g.anime); selected.addAll(g.reals)
+        compareMode = false
+        if (selected.size >= 2) screen = Screen.Compare
+    }
 
     fun refresh() {
         viewModelScope.launch {
@@ -56,7 +89,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(index: Int) { screen = Screen.Viewer(index) }
     fun goCompare() { if (selected.size >= 2) screen = Screen.Compare }
+    fun openPairs() { screen = Screen.Pairs }
     fun back(): Boolean = when {
+        screen is Screen.Compare && !compareMode -> { selected.clear(); screen = Screen.Gallery; true }
         screen !is Screen.Gallery -> { screen = Screen.Gallery; true }
         compareMode -> { exitCompareMode(); true }
         else -> false
@@ -121,5 +156,84 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         selected.removeAll { it.id in ids }
         if (screen is Screen.Compare && selected.size < 2) screen = Screen.Gallery
         refresh()
+    }
+
+    // ───────────── automatsko uparivanje anime ↔ realizam ─────────────
+    private val prefs = app.getSharedPreferences("prefs", android.content.Context.MODE_PRIVATE)
+    private val scanner = Scanner(File(app.filesDir, "fp_cache.json"))
+    private val renamer = Renamer(File(app.filesDir, "rename_log.json"))
+
+    var pairsFolder by mutableStateOf(prefs.getString("pairsFolder", null)); private set
+    var autoApply by mutableStateOf(prefs.getBoolean("autoApply", true)); private set
+    var scanning by mutableStateOf(false); private set
+    var scanProgress by mutableStateOf(0 to 0); private set
+    var pairing by mutableStateOf<PairingResult?>(null); private set
+    var pairsMessage by mutableStateOf<String?>(null); private set
+    var canUndo by mutableStateOf(renamer.hasUndo()); private set
+
+    /** Folderi (apsolutne putanje) u kojima ima slika – za izbor foldera. */
+    val folderPaths: List<String> get() = all.mapNotNull { it.path?.substringBeforeLast('/', "")?.ifEmpty { null } }.distinct().sorted()
+
+    fun choosePairsFolder(path: String) {
+        prefs.edit().putString("pairsFolder", path).apply(); pairsFolder = path; pairing = null; scanPairs()
+    }
+    fun toggleAutoApply(on: Boolean) { prefs.edit().putBoolean("autoApply", on).apply(); autoApply = on }
+
+    fun manualScan() { pairsMessage = null; scanPairs() }
+
+    fun autoScan() { if (pairsFolder != null && !scanning) scanPairs() }
+
+    fun scanPairs() {
+        val dir = pairsFolder?.let(::File)?.takeIf { it.isDirectory } ?: run { pairsMessage = "Folder ne postoji"; return }
+        if (scanning) return
+        viewModelScope.launch {
+            scanning = true
+            try {
+                val r = Pairer.pair(scanner.scan(dir) { d, t -> scanProgress = d to t })
+                pairing = r
+                if (autoApply) applyGroups(r.groups.filter { it.confidence != Confidence.REVIEW }, quiet = true)
+            } catch (e: Exception) { pairsMessage = "Skeniranje nije uspjelo: ${e.message}" }
+            finally { scanning = false }
+        }
+    }
+
+    fun applyGroups(groups: List<Group>, quiet: Boolean = false) {
+        val dir = pairsFolder?.let(::File) ?: return
+        viewModelScope.launch {
+            val ops = Namer.plan(groups, dir.listFiles()?.toList().orEmpty())
+            if (ops.isEmpty()) { if (!quiet) pairsMessage = "Nema ničega za preimenovati"; return@launch }
+            val out = withContext(Dispatchers.IO) { renamer.apply(ops) }
+            if (out.error != null) { pairsMessage = out.error; return@launch }
+            canUndo = renamer.hasUndo()
+            pairsMessage = "Preimenovano ${out.done} fajlova"
+            MediaScannerConnection.scanFile(getApplication(), ops.flatMap { listOf(it.from.path, it.to.path) }.toTypedArray(), null) { _, _ -> refresh() }
+            refresh()
+            pairing = null; scanning = false; scanPairs()
+        }
+    }
+
+    fun applyOne(g: Group) = applyGroups(listOf(g))
+
+    /** Za grupe "provjeri": prebaci ulogu izvora na sljedeći član. */
+    fun swapSource(g: Group) {
+        val r = pairing ?: return
+        val m = g.members; val next = m[(m.indexOfFirst { it.path == g.source.path } + 1) % m.size]
+        val swapped = Group(next, m.filter { it !== next }.sortedWith(compareBy({ it.modified }, { it.name })), Confidence.REVIEW, g.note)
+        pairing = PairingResult(r.groups.map { if (it === g) swapped else it }, r.orphans, r.ungrouped)
+    }
+
+    fun undoLast() {
+        viewModelScope.launch {
+            val n = withContext(Dispatchers.IO) { renamer.undoLast() }
+            canUndo = renamer.hasUndo()
+            pairsMessage = "Vraćeno $n fajlova"
+            val old = pairsFolder
+            // da auto-primjena ne vrati odmah isto, privremeno je ugasi za ovaj sken
+            val prev = autoApply; autoApply = false
+            MediaScannerConnection.scanFile(getApplication(), old?.let { File(it).listFiles()?.map { f -> f.path }?.toTypedArray() } ?: emptyArray(), null) { _, _ -> refresh() }
+            refresh(); pairing = null; scanPairs()
+            // vrati prethodno stanje prekidača kad sken završi
+            launch { while (scanning) kotlinx.coroutines.delay(100); autoApply = prev }
+        }
     }
 }

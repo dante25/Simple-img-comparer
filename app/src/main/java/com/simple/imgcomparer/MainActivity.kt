@@ -44,6 +44,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Compare
@@ -87,9 +88,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val Bg = Color(0xFF0E0E11)
-private val Surface1 = Color(0xFF1A1A20)
-private val Accent = Color(0xFF7C9CFF)
+internal val Bg = Color(0xFF0E0E11)
+internal val Surface1 = Color(0xFF1A1A20)
+internal val Accent = Color(0xFF7C9CFF)
 
 @Composable
 internal fun AppTheme(content: @Composable () -> Unit) = MaterialTheme(
@@ -124,7 +125,7 @@ private fun Root(vm: GalleryViewModel) {
     var askAllFiles by remember { mutableStateOf(false) }
     var askedAllFiles by rememberSaveable { mutableStateOf(false) }
     if (granted) LifecycleResumeEffect(Unit) {
-        vm.refresh()
+        vm.refresh(); vm.autoScan()
         if (needsAllFilesAccess() && !askedAllFiles) askAllFiles = true
         onPauseOrDispose { }
     }
@@ -166,6 +167,7 @@ private fun Root(vm: GalleryViewModel) {
             is Screen.Gallery -> GalleryScreen(vm)
             is Screen.Viewer -> ViewerScreen(vm, s.index)
             is Screen.Compare -> CompareScreen(vm)
+            is Screen.Pairs -> PairsScreen(vm)
         }
     }
 }
@@ -183,7 +185,10 @@ internal fun GalleryScreen(vm: GalleryViewModel) {
                 if (vm.compareMode) IconButton({ vm.exitCompareMode() }) { Icon(Icons.Default.Close, null) }
             },
             actions = {
-                if (!vm.compareMode) IconButton({ vm.enterCompareMode() }) { Icon(Icons.Default.Compare, "Compare") }
+                if (!vm.compareMode) {
+                    IconButton({ vm.openPairs() }) { Icon(Icons.Default.AutoAwesome, "Parovi") }
+                    IconButton({ vm.enterCompareMode() }) { Icon(Icons.Default.Compare, "Compare") }
+                }
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg, titleContentColor = Color.White,
                 actionIconContentColor = Color.White, navigationIconContentColor = Color.White),
@@ -211,11 +216,19 @@ internal fun GalleryScreen(vm: GalleryViewModel) {
                     Box(
                         Modifier.aspectRatio(1f).background(Surface1)
                             .combinedClickable(
-                                onClick = { if (vm.compareMode) vm.toggle(m) else vm.open(index) },
+                                onClick = {
+                                    val grp = vm.groupOfAnime(m)
+                                    if (vm.compareMode) vm.toggle(m)
+                                    else if (grp != null && grp.reals.isNotEmpty()) vm.openGroup(grp)
+                                    else vm.open(index)
+                                },
                                 onLongClick = { if (!vm.compareMode) { vm.enterCompareMode(); vm.toggle(m) } else vm.makeMain(m) },
                             )
                     ) {
                         Thumb(m, Modifier.fillMaxSize())
+                        vm.groupOfAnime(m)?.takeIf { it.reals.isNotEmpty() }?.let { grp ->
+                            Badge("+${grp.reals.size}", Modifier.align(Alignment.BottomEnd).padding(6.dp).testTag("groupBadge"))
+                        }
                         if (selIndex >= 0) {
                             Box(Modifier.fillMaxSize().background(Accent.copy(alpha = 0.25f))
                                 .border(3.dp, Accent))
@@ -242,7 +255,7 @@ private fun FolderChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Badge(text: String, modifier: Modifier = Modifier) {
+internal fun Badge(text: String, modifier: Modifier = Modifier) {
     Box(
         modifier.clip(RoundedCornerShape(8.dp)).background(Accent).padding(horizontal = 7.dp, vertical = 2.dp)
     ) { Text(text, color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
@@ -250,7 +263,7 @@ private fun Badge(text: String, modifier: Modifier = Modifier) {
 
 /** Mali thumbnail – Coil dekodira samo 256px pa je listanje glatko. */
 @Composable
-private fun Thumb(m: Media, modifier: Modifier = Modifier, px: Int = 256) {
+internal fun Thumb(m: Media, modifier: Modifier = Modifier, px: Int = 256) {
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current).data(m.uri).size(px).crossfade(false).build(),
         contentDescription = m.name, contentScale = ContentScale.Crop, modifier = modifier,
