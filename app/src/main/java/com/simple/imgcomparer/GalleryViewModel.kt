@@ -51,7 +51,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setFolder(f: String?) { folder = f }
+    fun selectFolder(f: String?) { folder = f }
 
     fun open(index: Int) { screen = Screen.Viewer(index) }
     fun goCompare() { if (selected.size >= 2) screen = Screen.Compare }

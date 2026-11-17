@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -150,8 +151,8 @@ private fun GalleryScreen(vm: GalleryViewModel) {
             contentPadding = PaddingValues(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            item { FolderChip("Sve", vm.folder == null) { vm.setFolder(null) } }
-            items(vm.folders) { f -> FolderChip(f, vm.folder == f) { vm.setFolder(f) } }
+            item { FolderChip("Sve", vm.folder == null) { vm.selectFolder(null) } }
+            items(vm.folders) { f -> FolderChip(f, vm.folder == f) { vm.selectFolder(f) } }
         }
         Spacer(Modifier.height(8.dp))
 
@@ -321,21 +322,21 @@ private fun CompareScreen(vm: GalleryViewModel) {
 @Composable
 private fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modifier) {
     var frac by remember { mutableFloatStateOf(0.5f) }
-    var size by remember { mutableStateOf(IntSize.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
     val ctx = LocalContext.current
     fun req(m: Media) = ImageRequest.Builder(ctx).data(m.uri).size(Size(2048, 2048)).build()
 
     Box(
         modifier.clip(RoundedCornerShape(16.dp)).background(Color.Black)
-            .onSizeChanged { size = it }
+            .onSizeChanged { boxSize = it }
             .pointerInput(Unit) {
                 detectHorizontalDragGestures { change, _ ->
                     change.consume()
-                    if (size.width > 0) frac = (change.position.x / size.width).coerceIn(0f, 1f)
+                    if (boxSize.width > 0) frac = (change.position.x / boxSize.width).coerceIn(0f, 1f)
                 }
             }
             .pointerInput(Unit) {
-                detectTapGestures { if (size.width > 0) frac = (it.x / size.width).coerceIn(0f, 1f) }
+                detectTapGestures { if (boxSize.width > 0) frac = (it.x / boxSize.width).coerceIn(0f, 1f) }
             }
     ) {
         AsyncImage(req(after), after.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
@@ -349,7 +350,7 @@ private fun BeforeAfter(before: Media, after: Media, modifier: Modifier = Modifi
             contentScale = ContentScale.Fit,
         )
         // linija + ručka
-        val xDp = with(LocalDensity.current) { (size.width * frac).toDp() }
+        val xDp = with(LocalDensity.current) { (boxSize.width * frac).toDp() }
         Box(Modifier.offset(x = xDp - 1.dp).width(2.dp).fillMaxHeight().background(Color.White))
         Box(
             Modifier.offset(x = xDp - 22.dp).align(Alignment.CenterStart).size(44.dp)
