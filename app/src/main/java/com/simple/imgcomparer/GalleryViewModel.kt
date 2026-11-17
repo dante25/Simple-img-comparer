@@ -10,6 +10,7 @@ import android.os.Environment
 import com.simple.imgcomparer.pairing.*
 import java.io.File
 import android.provider.MediaStore
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -43,7 +44,8 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     /** Activity ovo čita i pokreće sistemski dijalog za brisanje. */
     var pendingDelete by mutableStateOf<IntentSender?>(null)
 
-    val folders: List<String> get() = all.map { it.folder }.distinct().sorted()
+    private val foldersState = derivedStateOf { all.map { it.folder }.distinct().sorted() }
+    val folders: List<String> get() = foldersState.value
 
     /** NNNN_anime + NNNN_real_k u istom folderu = jedna grupa (anime + varijante realizma). */
     class PairGroup(val anime: Media, val reals: List<Media>)
@@ -52,29 +54,41 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         val n = (Namer.ANIME.matchEntire(m.name) ?: Namer.REAL.matchEntire(m.name))?.groupValues?.get(1) ?: return null
         return dirOf(m) + "#" + n
     }
-    val pairGroups: Map<String, PairGroup> get() {
-        val animes = all.filter { Namer.ANIME.matches(it.name) }.associateBy { groupKey(it)!! }
-        return animes.mapValues { (k, a) ->
-            PairGroup(a, all.filter { Namer.REAL.matches(it.name) && groupKey(it) == k }
-                .sortedBy { Namer.REAL.matchEntire(it.name)!!.groupValues[2].toInt() })
+
+    /** Indeks grupa se gradi JEDNOM po učitavanju galerije (O(N)), ne po pločici – inače se app zamrzne. */
+    private class GroupIndex(val groups: Map<String, PairGroup>, val hidden: Set<Long>)
+    private val index = derivedStateOf {
+        val animes = HashMap<String, Media>(); val reals = HashMap<String, MutableList<Media>>()
+        val only = pairsFolder
+        for (m in all) {
+            if (only == null || m.path == null || dirOf(m) != only) continue   // sve izvan definisanog foldera = obična galerija
+            if (Namer.ANIME.matches(m.name)) groupKey(m)?.let { animes[it] = m }
+            else if (Namer.REAL.matches(m.name)) groupKey(m)?.let { reals.getOrPut(it) { mutableListOf() }.add(m) }
         }
+        val groups = HashMap<String, PairGroup>(animes.size); val hidden = HashSet<Long>()
+        for ((k, a) in animes) {
+            val rs = reals[k].orEmpty().sortedBy { Namer.REAL.matchEntire(it.name)!!.groupValues[2].toInt() }
+            groups[k] = PairGroup(a, rs); rs.forEach { hidden += it.id }
+        }
+        GroupIndex(groups, hidden)
     }
-    fun groupOfAnime(m: Media): PairGroup? = if (Namer.ANIME.matches(m.name)) pairGroups[groupKey(m)] else null
+    val pairGroups: Map<String, PairGroup> get() = index.value.groups
+    fun groupOfAnime(m: Media): PairGroup? = if (Namer.ANIME.matches(m.name)) groupKey(m)?.let { index.value.groups[it] } else null
 
     /** Varijante realizma se u mreži skrivaju iza svoje anime slike. */
-    val visible: List<Media> get() {
-        val groups = pairGroups
-        return (folder?.let { f -> all.filter { it.folder == f } } ?: all).filterNot {
-            Namer.REAL.matches(it.name) && groups.containsKey(groupKey(it))
-        }
+    private val visibleState = derivedStateOf {
+        val hidden = index.value.hidden
+        (folder?.let { f -> all.filter { it.folder == f } } ?: all).filterNot { it.id in hidden }
     }
+    val visible: List<Media> get() = visibleState.value
 
     /** Redoslijed u klasičnom pregledu: slika, pa odmah njene varijante realizma. */
-    val viewerList: List<Media> get() {
-        val groups = pairGroups
-        return visible.flatMap { m -> listOf(m) + (if (Namer.ANIME.matches(m.name)) groups[groupKey(m)]?.reals.orEmpty() else emptyList()) }
+    private val viewerState = derivedStateOf {
+        val groups = index.value.groups
+        visibleState.value.flatMap { m -> listOf(m) + (if (Namer.ANIME.matches(m.name)) groupKey(m)?.let { groups[it] }?.reals.orEmpty() else emptyList()) }
     }
-    fun groupFor(m: Media): PairGroup? = groupKey(m)?.let { pairGroups[it] }?.takeIf { it.reals.isNotEmpty() }
+    val viewerList: List<Media> get() = viewerState.value
+    fun groupFor(m: Media): PairGroup? = groupKey(m)?.let { index.value.groups[it] }?.takeIf { it.reals.isNotEmpty() }
     fun openMedia(m: Media) { open(viewerList.indexOfFirst { it.id == m.id }.coerceAtLeast(0)) }
 
     fun openGroup(g: PairGroup) {
@@ -180,11 +194,12 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     var canUndo by mutableStateOf(renamer.hasUndo()); private set
 
     /** Folderi (apsolutne putanje) u kojima ima slika – za izbor foldera. */
-    val folderPaths: List<String> get() = all.mapNotNull { it.path?.substringBeforeLast('/', "")?.ifEmpty { null } }.distinct().sorted()
+    private val folderPathsState = derivedStateOf { all.mapNotNull { it.path?.substringBeforeLast('/', "")?.ifEmpty { null } }.distinct().sorted() }
+    val folderPaths: List<String> get() = folderPathsState.value
 
-    fun choosePairsFolder(path: String) {
-        prefs.edit().putString("pairsFolder", path).apply(); pairsFolder = path; pairing = null; scanPairs()
-    }
+    /** Samo postavi folder (bez skeniranja). Grupisanje u galeriji važi isključivo za ovaj folder. */
+    internal fun usePairsFolder(path: String) { prefs.edit().putString("pairsFolder", path).apply(); pairsFolder = path; pairing = null }
+    fun choosePairsFolder(path: String) { usePairsFolder(path); scanPairs() }
     fun toggleAutoApply(on: Boolean) { prefs.edit().putBoolean("autoApply", on).apply(); autoApply = on }
 
     fun manualScan() { pairsMessage = null; scanPairs() }
@@ -197,7 +212,8 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             scanning = true
             try {
-                val r = Pairer.pair(scanner.scan(dir) { d, t -> scanProgress = d to t })
+                val items = scanner.scan(dir) { d, t -> scanProgress = d to t }
+                val r = withContext(Dispatchers.Default) { Pairer.pair(items) }
                 pairing = r
                 if (autoApply) applyGroups(r.groups.filter { it.confidence != Confidence.REVIEW }, quiet = true)
             } catch (e: Exception) { pairsMessage = "Skeniranje nije uspjelo: ${e.message}" }

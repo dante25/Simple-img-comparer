@@ -83,7 +83,8 @@ class PairsUiTest {
     }
 
     @Test fun gallery_collapses_group_tap_opens_viewer_badge_opens_compare() {
-        setMedia(tmp.newFolder("a"), listOf("0001_anime.png", "0001_real_1.png", "0001_real_2.png", "other.png"))
+        val dirA = tmp.newFolder("a")
+        setMedia(dirA, listOf("0001_anime.png", "0001_real_1.png", "0001_real_2.png", "other.png")); vm.usePairsFolder(dirA.path)
         rule.setContent { AppTheme { GalleryScreen(vm) } }
         rule.waitForIdle()
         assertEquals(listOf("0001_anime.png", "other.png"), vm.visible.map { it.name })   // varijante skrivene u mreži
@@ -105,7 +106,7 @@ class PairsUiTest {
     @Test fun viewer_shows_compare_for_grouped_images_and_A_can_be_deleted_there() {
         val dir = tmp.newFolder("v")
         val deleted = installMediaProvider()
-        setMedia(dir, listOf("0001_anime.png", "0001_real_1.png", "other.png"), contentUris = true)
+        setMedia(dir, listOf("0001_anime.png", "0001_real_1.png", "other.png"), contentUris = true); vm.usePairsFolder(dir.path)
         vm.silentDelete = { true }
         // otvori varijantu (real) pojedinačno
         vm.openMedia(vm.viewerList[1])
@@ -131,13 +132,14 @@ class PairsUiTest {
             Media(1, Uri.fromFile(f(d2, "0001_real_1.png")), "0001_real_1.png", "y", d2.path + "/0001_real_1.png"),
         )
         vm.repo = object : MediaRepository(app.contentResolver) { override suspend fun loadImages() = l }
-        vm.refresh(); rule.waitForIdle()
+        vm.usePairsFolder(d1.path); vm.refresh(); rule.waitForIdle()
         assertEquals(2, vm.visible.size)   // real iz drugog foldera nema svoju anime → ne sakriva se
         assertNull(vm.groupOfAnime(l[0])?.reals?.firstOrNull())
     }
 
     @Test fun deleting_B_inside_group_compare_keeps_A() {
-        setMedia(tmp.newFolder("d"), listOf("0001_anime.png", "0001_real_1.png"))
+        val dd = tmp.newFolder("d")
+        setMedia(dd, listOf("0001_anime.png", "0001_real_1.png")); vm.usePairsFolder(dd.path)
         vm.openGroup(vm.groupOfAnime(vm.all[0])!!)
         vm.silentDelete = { true }
         // jedini B obrisan → nazad u galeriju, A i dalje izabrana je očišćena
@@ -226,5 +228,43 @@ class PairsUiTest {
         rule.onNodeWithTag("applyAll").assertIsEnabled().performClick()
         until { vm.canUndo && !vm.scanning && Namer.ANIME.matches(dir.list()!!.first { it.contains("anime") }) }
         assertEquals(10, dir.list()!!.count { Namer.ANIME.matches(it) })
+    }
+
+    // ───── performanse: velika galerija se ne smije zamrznuti ─────
+    @Test fun large_gallery_grouping_is_fast() {
+        val n = 20_000
+        val list = ArrayList<Media>(n)
+        for (g in 0 until 3000) {
+            val dir = "/storage/emulated/0/DCIM/set${g % 5}"
+            list += Media(list.size.toLong(), Uri.parse("content://media/external/images/media/${list.size}"), "%04d_anime.png".format(g), "set", "$dir/%04d_anime.png".format(g))
+            for (r in 1..3) list += Media(list.size.toLong(), Uri.parse("content://media/external/images/media/${list.size}"), "%04d_real_$r.png".format(g), "set", "$dir/%04d_real_$r.png".format(g))
+        }
+        while (list.size < n) list += Media(list.size.toLong(), Uri.parse("content://media/external/images/media/${list.size}"), "IMG_${list.size}.jpg", "Camera", "/storage/emulated/0/DCIM/Camera/IMG_${list.size}.jpg")
+        vm.repo = object : MediaRepository(app.contentResolver) { override suspend fun loadImages() = list }
+        vm.usePairsFolder("/storage/emulated/0/DCIM/set0")
+        val t0 = System.nanoTime()
+        vm.refresh(); rule.waitForIdle()
+        // ono što mreža radi po pločici: upit grupe za svaku vidljivu sliku, uz više "rekompozicija"
+        repeat(5) { vm.visible.forEach { vm.groupOfAnime(it) } }
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        assertEquals(n - 600 * 3, vm.visible.size)          // skrivene su samo varijante iz definisanog foldera (set0)
+        assertTrue("20k slika: $ms ms", ms < 3000)
+    }
+
+    @Test fun without_defined_folder_or_outside_it_nothing_is_grouped_or_hidden() {
+        val inDir = tmp.newFolder("in"); val outDir = tmp.newFolder("out")
+        val f = { d: File, n: String -> File(d, n).also { png(it, AColor.GRAY) } }
+        val l = listOf(
+            Media(0, Uri.fromFile(f(inDir, "0001_anime.png")), "0001_anime.png", "in", inDir.path + "/0001_anime.png"),
+            Media(1, Uri.fromFile(f(inDir, "0001_real_1.png")), "0001_real_1.png", "in", inDir.path + "/0001_real_1.png"),
+            Media(2, Uri.fromFile(f(outDir, "0001_anime.png")), "0001_anime.png", "out", outDir.path + "/0001_anime.png"),
+            Media(3, Uri.fromFile(f(outDir, "0001_real_1.png")), "0001_real_1.png", "out", outDir.path + "/0001_real_1.png"),
+        )
+        vm.repo = object : MediaRepository(app.contentResolver) { override suspend fun loadImages() = l }
+        vm.refresh(); rule.waitForIdle()
+        assertEquals(4, vm.visible.size)                            // folder nije definisan → ništa se ne dira
+        vm.usePairsFolder(inDir.path); rule.waitForIdle()
+        assertEquals(listOf(0L, 2L, 3L), vm.visible.map { it.id }.sorted())   // samo "in" je grupisan; "out" ostaje običan
+        assertNotNull(vm.groupOfAnime(l[0])); assertNull(vm.groupOfAnime(l[2])); assertNull(vm.groupFor(l[3]))
     }
 }
